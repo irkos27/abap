@@ -1,0 +1,41 @@
+"Программа для просмотра текста программ
+PARAMETERS: programm TYPE programm MEMORY ID rid.
+
+DATA: it_coding TYPE TABLE OF d022s,
+      it_docu TYPE TABLE OF tline,
+      it_textpool TYPE TABLE OF textpool.
+DATA: repid LIKE sy-repid,
+      dynpfields TYPE TABLE OF dynpread WITH HEADER LINE.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR programm.
+  dynpfields-fieldname  = 'RS38M-PROGRAMM'.
+  APPEND dynpfields.
+  repid = sy-repid.
+  CALL FUNCTION 'DYNP_VALUES_READ'
+       EXPORTING
+            dyname     = repid
+            dynumb     = sy-dynnr
+       TABLES
+            dynpfields = dynpfields
+       EXCEPTIONS
+            OTHERS.
+  READ TABLE dynpfields INDEX 1.
+  programm = dynpfields-fieldvalue.
+  PERFORM program_directory(saplwbabap) USING programm 'X'.
+
+START-OF-SELECTION.
+  CALL FUNCTION 'RV_REPORT_READ'
+    EXPORTING
+      rr_reportname        = programm
+    TABLES
+      rr_coding            = it_coding
+      rr_docu              = it_docu
+      rr_textpool          = it_textpool
+    EXCEPTIONS
+      model_code_not_found = 1
+      OTHERS               = 2.
+  IF sy-subrc <> 0.
+    MESSAGE 'Not found' TYPE 'E'.
+  ENDIF.
+
+  EDITOR-CALL FOR it_coding DISPLAY-MODE TITLE programm.
