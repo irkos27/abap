@@ -1,5 +1,5 @@
 "Программа для просмотра текста программ
-PARAMETERS: programm TYPE programm MEMORY ID rid.
+PARAMETERS: programm TYPE programm MEMORY ID rid. 
 
 DATA: it_coding TYPE TABLE OF d022s,
       it_docu TYPE TABLE OF tline,
