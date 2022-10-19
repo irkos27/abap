@@ -1,0 +1,620 @@
+"http://sapnet.ru/viewtopic.php?t=869
+Программа предназначена для редактирования записей любых таблиц баз данных. В ней используется динамическое формирование таблиц и вывод через SimpleALV. Поэтому, работает только в erp2005 и выше.
+Интерфейс ввода интуитивно понятен ИМХО.
+Нарисовал эту программу в тот момент, когда администраторы закрыли доступ к SE16n.
+
+В своей программе придется создать два гуи-статуса:
+DISPLAY - строка кнопок - TGGL
+- строка инструментов - BACK, EXIT, CANCEL
+
+EDIT - строка кнопок - TGGL, ADD_ROW, DEL_ROW, CHN_ROW
+- строка инструментов - SAVE, BACK, EXIT, CANCEL
+, а также два гуи-заголовка с такими же названиями и значениями: "Просмотр записей: & &" и "Ввод записей: & &".
+
+Code:
+
+CONSTANTS: MODE_EDIT    TYPE STRING VALUE 'EDIT',
+           MODE_DISPLAY TYPE STRING VALUE 'DISPLAY'.
+
+DATA: LV_MODE TYPE STRING,
+      LV_TEXT TYPE AS4TEXT,
+      OKCODE  TYPE SY-UCOMM,
+      GUI_STATUS TYPE SYPFKEY.
+
+DATA: DYNTAB    TYPE STANDARD TABLE OF DNTAB,
+      WA_DYNTAB TYPE DNTAB,
+      DREF1     TYPE REF TO DATA,
+      DREF2     TYPE REF TO DATA,
+      DREF3     TYPE REF TO DATA,
+      HEADER1   TYPE REF TO DATA,
+      HEADER2   TYPE REF TO DATA,
+      LT_X031L_TAB TYPE TABLE OF X031L WITH HEADER LINE,
+      KEYTAB TYPE TABLE OF DDFLDNAM WITH HEADER LINE,
+      LS_TABLE TYPE DD02L,
+      TITLE TYPE LVC_TITLE,
+      LV_INDEX TYPE I.
+
+DATA: LV_CONTAINER  TYPE REF TO CL_GUI_CUSTOM_CONTAINER,
+      I_FCAT        TYPE LVC_T_FCAT,
+      WA_FCAT       TYPE LVC_S_FCAT,
+      GR_TABLE      TYPE REF TO CL_SALV_TABLE,
+      GR_SELECTIONS TYPE REF TO CL_SALV_SELECTIONS,
+      GR_COLUMNS    TYPE REF TO CL_SALV_COLUMNS_TABLE,
+      GR_COLUMN     TYPE REF TO CL_SALV_COLUMN_TABLE,
+      GR_COL        TYPE REF TO CL_SALV_COLUMN,
+      GR_DISPLAY    TYPE REF TO CL_SALV_DISPLAY_SETTINGS.
+DATA: GR_EVENTS     TYPE REF TO CL_SALV_EVENTS_TABLE.
+
+*----------------------------------------------------------------------*
+*       CLASS lcl_handle_events DEFINITION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+CLASS LCL_HANDLE_EVENTS DEFINITION.
+  PUBLIC SECTION.
+    METHODS: ON_USER_COMMAND FOR EVENT ADDED_FUNCTION
+             OF CL_SALV_EVENTS IMPORTING E_SALV_FUNCTION.
+*    METHODS: ON_DOUBLE_CLICK FOR EVENT DOUBLE_CLICK
+*    OF CL_SALV_EVENTS_TABLE IMPORTING ROW COLUMN.
+ENDCLASS. "lcl_handle_events DEFINITION
+
+DATA: EVENT_HANDLER TYPE REF TO LCL_HANDLE_EVENTS.
+
+
+DATA: PVALUE TYPE TABLE OF SVAL WITH HEADER LINE,
+      RETCODE TYPE STRING.
+
+FIELD-SYMBOLS : <NEWTAB> TYPE TABLE,
+                <BUFTAB> TYPE TABLE,
+                <TEMPTAB> TYPE TABLE,
+                <HEADER> TYPE ANY,
+                <TMP_HEADER> TYPE ANY.
+
+PARAMETERS: LV_TABLE TYPE TABNAME MATCHCODE OBJECT DD_DBTB_16.
+
+INITIALIZATION.
+  CLEAR: LV_MODE, LV_TEXT, LV_TABLE.
+  REFRESH: LT_X031L_TAB, KEYTAB, DYNTAB.
+  GET PARAMETER ID 'DTB' FIELD LV_TABLE.
+  IF LV_TABLE IS NOT INITIAL.
+    SELECT SINGLE * FROM DD02L INTO LS_TABLE
+      WHERE TABNAME = LV_TABLE.
+  ENDIF.
+
+
+START-OF-SELECTION.
+* Check input data
+  IF LV_TABLE IS INITIAL.
+    MESSAGE 'Выберите таблицу для ввода записей' TYPE 'S'.
+    RETURN.
+  ELSE.
+   
+DATA: LV_STATE TYPE DDGOTSTATE.
+    CALL FUNCTION 'DDIF_TYPEINFO_GET'
+      EXPORTING
+        TYPENAME = LV_TABLE
+      IMPORTING
+        GOTSTATE = LV_STATE.
+    IF LV_STATE NE 'A'.
+      MESSAGE 'Таблица отсутствует в словаре данных либо неактивна' TYPE 'S'.
+      RETURN.
+    ENDIF.
+
+    SET PARAMETER ID 'DTB' FIELD LV_TABLE.
+    SELECT SINGLE DDTEXT FROM DD02T INTO LV_TEXT
+      WHERE TABNAME = LV_TABLE.
+  ENDIF.
+
+* Dynamic create internal table
+  PERFORM CREATE_INT_TABLES.
+
+  CREATE DATA HEADER1 TYPE (LV_TABLE).
+  ASSIGN HEADER1->* TO <HEADER>.
+  CREATE DATA HEADER2 TYPE (LV_TABLE).
+  ASSIGN HEADER2->* TO <TMP_HEADER>.
+
+* Get keyfield from nametab
+  CALL FUNCTION 'DDIF_NAMETAB_GET'
+    EXPORTING
+      TABNAME   = LV_TABLE
+    TABLES
+      X031L_TAB = LT_X031L_TAB.
+  IF SY-SUBRC <> 0.
+
+  ENDIF.
+
+  CALL FUNCTION 'DD_GET_KEYFIELDS_FROM_NAMETAB'
+    TABLES
+      ALL_FIELDS_TAB = LT_X031L_TAB
+      KEY_FLDNAM_TAB = KEYTAB.
+
+* Get data from DB
+  READ TABLE KEYTAB INDEX 1.
+  CASE KEYTAB-NAME.
+    WHEN 'CLIENT'.
+      SELECT * FROM (LV_TABLE) CLIENT SPECIFIED
+        INTO TABLE <NEWTAB> WHERE CLIENT = SY-MANDT.
+
+    WHEN 'MANDT'.
+      SELECT * FROM (LV_TABLE) CLIENT SPECIFIED
+        INTO TABLE <NEWTAB> WHERE MANDT = SY-MANDT.
+
+    WHEN OTHERS.
+      SELECT * FROM (LV_TABLE) CLIENT SPECIFIED
+        INTO TABLE <NEWTAB>.
+  ENDCASE.
+
+* Screen output
+  LV_MODE = MODE_DISPLAY.
+
+  PERFORM VIEW_OUTPUT_CREATE.
+
+  LEAVE PROGRAM.
+
+*----------------------------------------------------------------------*
+*       CLASS lcl_handle_events IMPLEMENTATION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+CLASS LCL_HANDLE_EVENTS IMPLEMENTATION.
+  METHOD ON_USER_COMMAND.
+    OKCODE = E_SALV_FUNCTION.
+
+    CASE OKCODE.
+      WHEN 'TGGL'.
+        PERFORM CHANGE_MODE CHANGING LV_MODE.
+
+        MOVE LV_MODE TO GUI_STATUS.
+        GR_TABLE->SET_SCREEN_STATUS( PFSTATUS = GUI_STATUS
+                                     REPORT = SY-REPID
+                                     SET_FUNCTIONS = GR_TABLE->C_FUNCTIONS_ALL ).
+
+      WHEN 'ADD_ROW'.
+        CLEAR <HEADER>.
+        PERFORM ENTRY_EDIT.
+
+      WHEN 'DEL_ROW'.
+        PERFORM GET_SELECTED_ROW.
+        IF LV_INDEX IS NOT INITIAL.
+          APPEND <HEADER> TO <BUFTAB>.
+          DELETE <NEWTAB> INDEX LV_INDEX.
+          GR_TABLE->REFRESH( ).
+        ELSE.
+          MESSAGE 'Выделите строку для удаления записи' TYPE 'S'.
+        ENDIF.
+
+      WHEN 'CHN_ROW'.
+        PERFORM GET_SELECTED_ROW.
+        IF LV_INDEX IS NOT INITIAL.
+          PERFORM ENTRY_EDIT.
+        ELSE.
+          MESSAGE 'Выделите строку для редактирования записи' TYPE 'S'.
+        ENDIF.
+
+      WHEN 'SAVE'.
+        IF <BUFTAB> IS NOT INITIAL.
+          DELETE (LV_TABLE) FROM TABLE <BUFTAB>.
+        ENDIF.
+        MODIFY (LV_TABLE) FROM TABLE <NEWTAB>.
+        COMMIT WORK AND WAIT.
+
+    ENDCASE.
+  ENDMETHOD.                    "ON_USER_COMMAND
+
+ENDCLASS.                    "lcl_handle_events IMPLEMENTATION
+
+
+*&---------------------------------------------------------------------*
+*&      Form  CHANGE_MODE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      <--P_LV_MODE  text
+*----------------------------------------------------------------------*
+
+FORM CHANGE_MODE  CHANGING P_LV_MODE.
+  IF P_LV_MODE EQ MODE_EDIT.
+    P_LV_MODE = MODE_DISPLAY.
+    PERFORM LOCK_ENTRYES USING 'OFF'.
+  ELSE.
+    P_LV_MODE = MODE_EDIT.
+    PERFORM LOCK_ENTRYES USING 'ON'.
+  ENDIF.
+  GR_TABLE->REFRESH( REFRESH_MODE = IF_SALV_C_REFRESH=>SOFT ).
+ENDFORM.                    " CHANGE_MODE
+
+
+
+
+*&---------------------------------------------------------------------*
+*&      Form  LOCK_ENTRYES
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_0015   text
+*----------------------------------------------------------------------*
+FORM LOCK_ENTRYES  USING    MODE.
+  DATA: FUNCTION TYPE STRING,
+        RESULT TYPE I.
+  CASE MODE.
+    WHEN 'ON'.
+      CONCATENATE 'ENQUEUE_E' LV_TABLE INTO FUNCTION.
+
+      PERFORM CHECK_FUNCTION_EXISTS USING FUNCTION
+                                    CHANGING RESULT.
+      IF RESULT IS INITIAL.
+        CALL FUNCTION FUNCTION.
+      ENDIF.
+    WHEN 'OFF'.
+      CONCATENATE 'DEQUEUE_E' LV_TABLE INTO FUNCTION.
+      PERFORM CHECK_FUNCTION_EXISTS USING FUNCTION
+                                    CHANGING RESULT.
+      IF RESULT IS INITIAL.
+        CALL FUNCTION FUNCTION.
+      ENDIF.
+  ENDCASE.
+
+ENDFORM.                    " LOCK_ENTRYES
+
+
+*&---------------------------------------------------------------------*
+*&      Form  ENTRY_EDIT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_<HEADER>  text
+*----------------------------------------------------------------------*
+FORM ENTRY_EDIT.
+  DATA: PVALUE TYPE TABLE OF SVAL WITH HEADER LINE,
+        RETCODE TYPE STRING,
+        KEY_FL, XLINE TYPE I, TVAL TYPE STRING.
+
+  FIELD-SYMBOLS: <FIELD>.
+
+* Initializate
+  REFRESH PVALUE. CLEAR KEY_FL.
+
+* Set data
+  <TEMPTAB> = <NEWTAB>.
+  <TMP_HEADER> = <HEADER>.
+
+* Create dynamic screen
+  LOOP AT LT_X031L_TAB.
+    IF LT_X031L_TAB-FIELDNAME NE 'MANDT' AND LT_X031L_TAB-FIELDNAME NE 'CLIENT'.
+      PVALUE-TABNAME   = LT_X031L_TAB-TABNAME.
+      PVALUE-FIELDNAME = LT_X031L_TAB-FIELDNAME.
+
+      ASSIGN COMPONENT LT_X031L_TAB-FIELDNAME OF STRUCTURE <HEADER> TO <FIELD>.
+      CHECK SY-SUBRC IS INITIAL.
+      PVALUE-VALUE     = <FIELD>.
+
+      READ TABLE KEYTAB WITH KEY NAME = LT_X031L_TAB-FIELDNAME.
+      IF SY-SUBRC EQ 0.
+        IF OKCODE EQ 'ADD_ROW'.
+          PVALUE-FIELD_ATTR = '01'.
+        ELSE.
+          PVALUE-FIELD_ATTR = '02'.
+        ENDIF.
+      ELSE.
+        CLEAR: PVALUE-FIELD_ATTR, PVALUE-FIELD_OBL.
+      ENDIF.
+
+      APPEND PVALUE.
+    ENDIF.
+  ENDLOOP.
+
+* Get input data
+  WHILE RETCODE IS INITIAL.
+    CALL FUNCTION 'POPUP_GET_VALUES'
+      EXPORTING
+        POPUP_TITLE     = 'Ввод записи'
+      IMPORTING
+        RETURNCODE      = RETCODE
+      TABLES
+        FIELDS          = PVALUE
+      EXCEPTIONS
+        ERROR_IN_FIELDS = 1
+        OTHERS          = 2.
+* Check input data
+    IF RETCODE EQ 'A'.
+      MESSAGE 'Отменено пользователем' TYPE 'S'.
+      <TMP_HEADER> = <HEADER>.
+*      CLEAR <HEADER>.
+    ELSE.
+      LOOP AT KEYTAB WHERE NAME NE 'MANDT' AND NAME NE 'CLIENT'.
+          READ TABLE PVALUE WITH KEY FIELDNAME = KEYTAB-NAME.
+          IF PVALUE-VALUE IS INITIAL.
+            KEY_FL = 'X'.
+          ENDIF.
+      ENDLOOP.
+
+
+      IF KEY_FL IS NOT INITIAL.
+        MESSAGE 'Заполните все ключевые поля' TYPE 'S'.
+      ELSE.
+        LOOP AT PVALUE.
+          READ TABLE LT_X031L_TAB WITH KEY FIELDNAME = PVALUE-FIELDNAME.
+          ASSIGN COMPONENT LT_X031L_TAB-FIELDNAME OF STRUCTURE <HEADER> TO <FIELD>.
+          CHECK SY-SUBRC IS INITIAL.
+          <FIELD> = PVALUE-VALUE.
+        ENDLOOP.
+
+        RETCODE = 'S'.
+
+        IF OKCODE EQ 'ADD_ROW'.
+          LOOP AT KEYTAB.
+            READ TABLE PVALUE WITH KEY FIELDNAME = KEYTAB-NAME.
+
+            FIELD-SYMBOLS: <COMP>.
+            LOOP AT <TEMPTAB> INTO <TMP_HEADER>.
+              ASSIGN COMPONENT KEYTAB-NAME OF STRUCTURE <TMP_HEADER> TO <COMP>.
+              IF <COMP> NE PVALUE-VALUE.
+
+                DELETE <TEMPTAB> INDEX SY-TABIX. "DI.
+
+              ENDIF.
+            ENDLOOP.
+            CLEAR <TMP_HEADER>.
+
+          ENDLOOP.
+          DESCRIBE TABLE <TEMPTAB> LINES XLINE.
+          IF XLINE NE 0.
+            MESSAGE 'Запись с введенным ключом уже присутствует в таблице' TYPE 'S'.
+            CLEAR RETCODE.
+          ENDIF.
+        ENDIF.
+
+      ENDIF.
+    ENDIF.
+  ENDWHILE.
+
+  IF <TMP_HEADER> <> <HEADER>.
+    IF LV_INDEX IS NOT INITIAL.
+      MODIFY <NEWTAB> FROM <HEADER> INDEX LV_INDEX.
+      CLEAR LV_INDEX.
+
+    ELSE.
+      APPEND <HEADER> TO <NEWTAB>.
+    ENDIF.
+    GR_TABLE->REFRESH( ).
+  ENDIF.
+
+ENDFORM.                    " ENTRY_EDIT
+
+
+*&---------------------------------------------------------------------*
+*&      Form  VIEW_OUTPUT_CREATE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+
+FORM VIEW_OUTPUT_CREATE .
+  IF GR_TABLE IS INITIAL.
+
+* Create SALV table
+    TRY.
+        CALL METHOD CL_SALV_TABLE=>FACTORY
+          EXPORTING
+*            R_CONTAINER  = LV_CONTAINER
+            LIST_DISPLAY = IF_SALV_C_BOOL_SAP=>FALSE
+          IMPORTING
+            R_SALV_TABLE = GR_TABLE
+          CHANGING
+            T_TABLE      = <NEWTAB>.
+
+      CATCH CX_SALV_MSG.
+    ENDTRY.
+* Set pf-status
+    MOVE LV_MODE TO GUI_STATUS.
+    GR_TABLE->SET_SCREEN_STATUS( PFSTATUS = GUI_STATUS
+                                 REPORT = SY-REPID
+                                 SET_FUNCTIONS = GR_TABLE->C_FUNCTIONS_ALL ).
+
+* Set up selections.
+    GR_SELECTIONS = GR_TABLE->GET_SELECTIONS( ).
+    GR_SELECTIONS->SET_SELECTION_MODE( 1 ). "Single
+
+* Set title
+    GR_DISPLAY = GR_TABLE->GET_DISPLAY_SETTINGS( ).
+    CONCATENATE 'Таблица - ' LV_TEXT INTO TITLE SEPARATED BY SPACE.
+    GR_DISPLAY->SET_LIST_HEADER( TITLE ).
+
+* Set fcat data
+    GR_COLUMNS = GR_TABLE->GET_COLUMNS( ).
+    LOOP AT LT_X031L_TAB.
+      DATA: FNAME   TYPE LVC_FNAME,
+            OUTLEN TYPE LVC_OUTLEN,
+            OUTPUTLEN TYPE OUTPUTLEN.
+      CLEAR: FNAME, OUTLEN.
+      MOVE LT_X031L_TAB-FIELDNAME TO FNAME.
+
+      GR_COLUMN ?= GR_COLUMNS->GET_COLUMN( FNAME ).
+
+      READ TABLE KEYTAB WITH KEY NAME = FNAME.
+      IF SY-SUBRC EQ 0.
+* Set keyfields for entryes
+        GR_COLUMN->SET_KEY( 'X' ).
+        IF FNAME EQ 'CLIENT' OR FNAME EQ 'MANDT'.
+          GR_COLUMN->SET_VISIBLE( SPACE ).
+        ENDIF.
+      ENDIF.
+
+* Optimization length of column
+*      GR_COLUMN->GET_DDIC_OUTPUTLEN( RECEIVING VALUE = OUTPUTLEN ).
+*      OUTLEN = OUTPUTLEN * XM .
+*      GR_COLUMN->SET_OUTPUT_LENGTH( OUTPUTLEN ).
+
+    ENDLOOP.
+
+* Set handler
+    GR_EVENTS = GR_TABLE->GET_EVENT( ).
+    CREATE OBJECT EVENT_HANDLER.
+    SET HANDLER EVENT_HANDLER->ON_USER_COMMAND FOR GR_EVENTS.
+*    SET HANDLER EVENT_HANDLER->ON_DOUBLE_CLICK FOR GR_EVENTS.
+
+* Display output table
+    GR_TABLE->DISPLAY( ).
+
+  ELSE.
+* Refresh output table
+*    GR_TABLE->REFRESH( ).
+  ENDIF.
+
+ENDFORM.                    " VIEW_OUTPUT_CREATE
+
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_SELECTED_ROW
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+
+FORM GET_SELECTED_ROW .
+  DATA: LR_SELECTIONS TYPE REF TO CL_SALV_SELECTIONS.
+  DATA: LT_ROWS TYPE SALV_T_ROW.
+  DATA: LS_ROWS TYPE I.
+
+  LR_SELECTIONS = GR_TABLE->GET_SELECTIONS( ).
+  LT_ROWS = LR_SELECTIONS->GET_SELECTED_ROWS( ).
+  READ TABLE LT_ROWS INTO LS_ROWS INDEX 1.
+  READ TABLE <NEWTAB> INTO <HEADER> INDEX LS_ROWS.
+  IF SY-SUBRC EQ 0.
+    LV_INDEX = LS_ROWS.
+  ENDIF.
+
+ENDFORM.                    " GET_SELECTED_ROW
+
+
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_INT_TABLES
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+
+FORM CREATE_INT_TABLES .
+  CALL FUNCTION 'NAMETAB_GET'
+    EXPORTING
+      LANGU   = SY-LANGU
+      TABNAME = LV_TABLE
+    TABLES
+      NAMETAB = DYNTAB.
+
+  LOOP AT DYNTAB INTO WA_DYNTAB.
+    WA_FCAT-FIELDNAME = WA_DYNTAB-FIELDNAME.
+    WA_FCAT-REF_FIELD = WA_DYNTAB-FIELDNAME.
+    WA_FCAT-REF_TABLE = WA_DYNTAB-TABNAME.
+    APPEND WA_FCAT TO I_FCAT .
+  ENDLOOP.
+
+  CALL METHOD CL_ALV_TABLE_CREATE=>CREATE_DYNAMIC_TABLE
+    EXPORTING
+      IT_FIELDCATALOG = I_FCAT
+    IMPORTING
+      EP_TABLE        = DREF1.
+  ASSIGN  DREF1->* TO <NEWTAB>.
+
+  CALL METHOD CL_ALV_TABLE_CREATE=>CREATE_DYNAMIC_TABLE
+    EXPORTING
+      IT_FIELDCATALOG = I_FCAT
+    IMPORTING
+      EP_TABLE        = DREF2.
+
+  ASSIGN  DREF2->* TO <BUFTAB>.
+
+  CALL METHOD CL_ALV_TABLE_CREATE=>CREATE_DYNAMIC_TABLE
+    EXPORTING
+      IT_FIELDCATALOG = I_FCAT
+    IMPORTING
+      EP_TABLE        = DREF3.
+
+  ASSIGN  DREF3->* TO <TEMPTAB>.
+
+ENDFORM.                    " CREATE_INT_TABLES
+
+
+*&---------------------------------------------------------------------*
+*&      Form  CHECK_FUNCTION_EXISTS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_FUNCTION  text
+*      <--P_RESULT  text
+*----------------------------------------------------------------------*
+FORM CHECK_FUNCTION_EXISTS  USING    P_FUNCTION
+                            CHANGING P_RESULT.
+
+  TABLES: TFDIR.
+  SELECT SINGLE * FROM TFDIR
+                  WHERE FUNCNAME = P_FUNCTION.
+  IF SY-SUBRC = 0.
+    CLEAR P_RESULT.
+  ELSE.
+    P_RESULT = 1.
+  ENDIF.
+
+ENDFORM.                    " CHECK_FUNCTION_EXISTS
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+В ходе массового тестирования выявлен баг. В пост-обработке данных popup экрана присутствовала проверка на заполнение не выводимого поля MANDT или CLIENT на заполнение. В итоге новые записи не вводились.
+Добавил условие перед проверкой:
+Code:
+      LOOP AT KEYTAB.
+        IF KEYTAB-NAME NE 'MANDT' AND KEYTAB-NAME NE 'CLIENT'.
+          READ TABLE PVALUE WITH KEY FIELDNAME = KEYTAB-NAME.
+          IF PVALUE-VALUE IS INITIAL.
+            KEY_FL = 'X'.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+
+Благодаря july7 выявлен дамп при попытке редактирования несуществующей в словаре таблицы. Добавлена соответствующая проверка в начале start-of-selection.
+Code:
+    DATA: LV_STATE TYPE DDGOTSTATE.
+    CALL FUNCTION 'DDIF_TYPEINFO_GET'
+      EXPORTING
+        TYPENAME = LV_TABLE
+      IMPORTING
+        GOTSTATE = LV_STATE.
+    IF LV_STATE NE 'A'.
+      MESSAGE 'Таблица отсутствует в словаре данных либо неактивна' TYPE 'S'.
+      RETURN.
+    ENDIF.
+
+Выявлен баг при попытке открытия и редактирования таблиц с типом полей UNIT (таблица MARA). Баг возникал всвязи с некорректной обработкой данных при создании таблиц через CL_ALV_TABLE_CREATE, в результате которой типизация полей менялась на CHAR.
+Так что тем, кто собирается редактировать такие таблицы придется сделать следующее:
+1. Закомментировать вызов подпрограммы CREATE_INT_TABLES. Вместо нее прописать вызов подпрограммы CREATE_INT_TABLES2.
+2. Соответственно, дописать подпрограмму:
+Code:
+FORM CREATE_INT_TABLES2 .
+  DATA: L_NEWTAB  TYPE REF TO DATA,
+        L_TEMPTAB TYPE REF TO DATA,
+        L_BUFTAB  TYPE REF TO DATA.
+
+  CREATE DATA L_NEWTAB TYPE STANDARD TABLE OF (LV_TABLE)
+        WITH NON-UNIQUE DEFAULT KEY.
+  ASSIGN L_NEWTAB->* TO <NEWTAB>.
+  CHECK SY-SUBRC EQ 0.
+
+  CREATE DATA L_TEMPTAB TYPE STANDARD TABLE OF (LV_TABLE)
+        WITH NON-UNIQUE DEFAULT KEY.
+  ASSIGN L_TEMPTAB->* TO <TEMPTAB>.
+  CHECK SY-SUBRC EQ 0.
+
+  CREATE DATA L_BUFTAB TYPE STANDARD TABLE OF (LV_TABLE)
+        WITH NON-UNIQUE DEFAULT KEY.
+  ASSIGN L_BUFTAB->* TO <BUFTAB>.
+  CHECK SY-SUBRC EQ 0.
+
+ENDFORM.                    " CREATE_INT_TABLES2
+
+3. В *Get data from DB изменить условия выборки на INTO CORRESSPONDING FIELDS OF TABLE.
